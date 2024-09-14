@@ -18,6 +18,7 @@
 package org.apache.flink.runtime.scheduler.adaptive.allocator;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.runtime.clusterframework.types.AllocationID;
 import org.apache.flink.runtime.jobgraph.JobVertexID;
 import org.apache.flink.runtime.jobmanager.scheduler.SlotSharingGroup;
@@ -46,12 +47,53 @@ import java.util.stream.Collectors;
 
 import static java.util.function.Function.identity;
 import static java.util.stream.Collectors.toMap;
-import static org.apache.flink.runtime.scheduler.adaptive.allocator.DefaultSlotAssigner.createExecutionSlotSharingGroups;
+import static org.apache.flink.runtime.scheduler.adaptive.allocator.SlotAssigner.createExecutionSlotSharingGroups;
+import static org.apache.flink.runtime.scheduler.adaptive.allocator.SlotAssigner.getSlotsPerTaskExecutor;
+import static org.apache.flink.runtime.scheduler.adaptive.allocator.SlotAssigner.sortTaskExecutors;
 import static org.apache.flink.util.Preconditions.checkState;
 
 /** A {@link SlotAssigner} that assigns slots based on the number of local key groups. */
 @Internal
 public class StateLocalitySlotAssigner implements SlotAssigner {
+
+    @VisibleForTesting
+    static class AllocationScore implements Comparable<AllocationScore> {
+
+        private final String groupId;
+        private final AllocationID allocationId;
+        private final long score;
+
+        public AllocationScore(String groupId, AllocationID allocationId, long score) {
+            this.groupId = groupId;
+            this.allocationId = allocationId;
+            this.score = score;
+        }
+
+        public String getGroupId() {
+            return groupId;
+        }
+
+        public AllocationID getAllocationId() {
+            return allocationId;
+        }
+
+        public long getScore() {
+            return score;
+        }
+
+        @Override
+        public int compareTo(StateLocalitySlotAssigner.AllocationScore other) {
+            int result = Long.compare(score, other.score);
+            if (result != 0) {
+                return result;
+            }
+            result = other.allocationId.compareTo(allocationId);
+            if (result != 0) {
+                return result;
+            }
+            return other.groupId.compareTo(groupId);
+        }
+    }
 
     @Override
     public Collection<SlotAssignment> assignSlots(
@@ -75,9 +117,18 @@ public class StateLocalitySlotAssigner implements SlotAssigner {
 
         final Map<String, ExecutionSlotSharingGroup> groupsById =
                 allGroups.stream().collect(toMap(ExecutionSlotSharingGroup::getId, identity()));
+
+        final Map<TaskManagerLocation, ? extends Set<? extends SlotInfo>> slotsPerTaskExecutor =
+                getSlotsPerTaskExecutor(freeSlots);
+        final Collection<? extends SlotInfo> slotInfos =
+                selectSlotsInMinimalTaskExecutors(
+                        freeSlots,
+                        slotsPerTaskExecutor,
+                        allGroups.size(),
+                        getSortedTaskExecutors(freeSlots, slotsPerTaskExecutor, scores));
+
         final Map<AllocationID, SlotInfo> slotsById =
-                selectSlotsInMinimalTaskExecutors(freeSlots, allGroups, scores).stream()
-                        .collect(toMap(SlotInfo::getAllocationId, identity()));
+                slotInfos.stream().collect(toMap(SlotInfo::getAllocationId, identity()));
         AllocationScore score;
         final Collection<SlotAssignment> assignments = new ArrayList<>();
         while ((score = scores.poll()) != null) {
@@ -104,34 +155,27 @@ public class StateLocalitySlotAssigner implements SlotAssigner {
         return assignments;
     }
 
-    @Override
-    public List<TaskManagerLocation> sortPrioritizedTaskExecutors(
-            Collection<? extends SlotInfo> slots, Collection<AllocationScore> scores) {
-        Map<TaskManagerLocation, ? extends Set<? extends SlotInfo>> slotsByTaskExecutor =
-                SlotAssigner.getSlotsPerTaskExecutor(slots);
-        final Map<AllocationID, TaskManagerLocation> allocIdToTaskExecutor =
-                slots.stream()
-                        .collect(
-                                Collectors.toMap(
-                                        SlotInfo::getAllocationId,
-                                        SlotInfo::getTaskManagerLocation));
+    @VisibleForTesting
+    List<TaskManagerLocation> getSortedTaskExecutors(
+            Collection<? extends SlotInfo> freeSlots,
+            Map<TaskManagerLocation, ? extends Set<? extends SlotInfo>> slotsPerTaskExecutor,
+            PriorityQueue<AllocationScore> scores) {
+        final Map<TaskManagerLocation, Long> scorePerTaskExecutor =
+                getScorePerTaskExecutor(freeSlots, slotsPerTaskExecutor, scores);
+        final Comparator<TaskManagerLocation> taskExecutorComparator =
+                (left, right) -> {
+                    int diff =
+                            Integer.compare(
+                                    slotsPerTaskExecutor.get(left).size(),
+                                    slotsPerTaskExecutor.get(right).size());
+                    return diff != 0
+                            ? diff
+                            : Long.compare(
+                                    scorePerTaskExecutor.getOrDefault(right, 0L),
+                                    scorePerTaskExecutor.getOrDefault(left, 0L));
+                };
 
-        Map<TaskManagerLocation, Long> scorePerTaskExecutor =
-                getScorePerTaskExecutor(scores, slotsByTaskExecutor, allocIdToTaskExecutor);
-        return slotsByTaskExecutor.keySet().stream()
-                .sorted(
-                        (left, right) -> {
-                            int diff =
-                                    Integer.compare(
-                                            slotsByTaskExecutor.get(right).size(),
-                                            slotsByTaskExecutor.get(left).size());
-                            return diff != 0
-                                    ? diff
-                                    : Long.compare(
-                                            scorePerTaskExecutor.getOrDefault(right, 0L),
-                                            scorePerTaskExecutor.getOrDefault(left, 0L));
-                        })
-                .collect(Collectors.toList());
+        return sortTaskExecutors(slotsPerTaskExecutor.keySet(), taskExecutorComparator);
     }
 
     @Nonnull
@@ -206,10 +250,16 @@ public class StateLocalitySlotAssigner implements SlotAssigner {
     }
 
     private static Map<TaskManagerLocation, Long> getScorePerTaskExecutor(
-            Collection<AllocationScore> scores,
+            Collection<? extends SlotInfo> slots,
             Map<TaskManagerLocation, ? extends Set<? extends SlotInfo>> slotsByTaskExecutor,
-            Map<AllocationID, TaskManagerLocation> allocIdToTaskExecutor) {
-        Map<TaskManagerLocation, Long> scorePerTaskExecutor =
+            Collection<AllocationScore> scores) {
+        final Map<AllocationID, TaskManagerLocation> allocIdToTaskExecutor =
+                slots.stream()
+                        .collect(
+                                Collectors.toMap(
+                                        SlotInfo::getAllocationId,
+                                        SlotInfo::getTaskManagerLocation));
+        final Map<TaskManagerLocation, Long> scorePerTaskExecutor =
                 new HashMap<>(slotsByTaskExecutor.size());
         for (AllocationScore allocScore : scores) {
             final TaskManagerLocation tml = allocIdToTaskExecutor.get(allocScore.getAllocationId());

@@ -18,13 +18,17 @@
 package org.apache.flink.runtime.scheduler.adaptive.allocator;
 
 import org.apache.flink.annotation.Internal;
-import org.apache.flink.runtime.clusterframework.types.AllocationID;
+import org.apache.flink.runtime.jobmanager.scheduler.SlotSharingGroup;
 import org.apache.flink.runtime.jobmaster.SlotInfo;
 import org.apache.flink.runtime.scheduler.adaptive.JobSchedulingPlan.SlotAssignment;
+import org.apache.flink.runtime.scheduler.strategy.ExecutionVertexID;
 import org.apache.flink.runtime.taskmanager.TaskManagerLocation;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -37,47 +41,6 @@ import static org.apache.flink.runtime.scheduler.adaptive.allocator.SlotSharingS
 @Internal
 public interface SlotAssigner {
 
-    /**
-     * The helper class to represent the allocation score on the specified group and allocated slot.
-     */
-    class AllocationScore implements Comparable<AllocationScore> {
-
-        private final String groupId;
-        private final AllocationID allocationId;
-        private final long score;
-
-        public AllocationScore(String groupId, AllocationID allocationId, long score) {
-            this.groupId = groupId;
-            this.allocationId = allocationId;
-            this.score = score;
-        }
-
-        public String getGroupId() {
-            return groupId;
-        }
-
-        public AllocationID getAllocationId() {
-            return allocationId;
-        }
-
-        public long getScore() {
-            return score;
-        }
-
-        @Override
-        public int compareTo(StateLocalitySlotAssigner.AllocationScore other) {
-            int result = Long.compare(score, other.score);
-            if (result != 0) {
-                return result;
-            }
-            result = other.allocationId.compareTo(allocationId);
-            if (result != 0) {
-                return result;
-            }
-            return other.groupId.compareTo(groupId);
-        }
-    }
-
     Collection<SlotAssignment> assignSlots(
             JobInformation jobInformation,
             Collection<? extends SlotInfo> freeSlots,
@@ -88,26 +51,22 @@ public interface SlotAssigner {
      * Select the target slots to assign with the requested groups.
      *
      * @param slots the raw slots to filter.
-     * @param groups the request execution slot sharing groups.
-     * @param scores the allocation scores.
+     * @param slotsByTaskExecutor slots per task executor.
+     * @param requestedGroups the number of the request execution slot sharing groups.
      * @return the target slots that are distributed on the minimal task executors.
      */
     default Collection<? extends SlotInfo> selectSlotsInMinimalTaskExecutors(
             Collection<? extends SlotInfo> slots,
-            Collection<ExecutionSlotSharingGroup> groups,
-            Collection<AllocationScore> scores) {
-        if (slots.size() - groups.size() <= 0) {
+            Map<TaskManagerLocation, ? extends Set<? extends SlotInfo>> slotsByTaskExecutor,
+            int requestedGroups,
+            List<TaskManagerLocation> sortedTaskExecutors) {
+        if (slots.size() - requestedGroups <= 0) {
             return slots;
         }
 
-        List<TaskManagerLocation> orderedTaskExecutors =
-                sortPrioritizedTaskExecutors(slots, scores);
-        Map<TaskManagerLocation, ? extends Set<? extends SlotInfo>> slotsByTaskExecutor =
-                SlotAssigner.getSlotsPerTaskExecutor(slots);
-
-        int requestedSlots = groups.size();
+        int requestedSlots = requestedGroups;
         final List<SlotInfo> result = new ArrayList<>();
-        for (TaskManagerLocation tml : orderedTaskExecutors) {
+        for (TaskManagerLocation tml : sortedTaskExecutors) {
             if (requestedSlots <= 0) {
                 break;
             }
@@ -121,13 +80,17 @@ public interface SlotAssigner {
     /**
      * Get the task executors with the order that aims to priority assigning requested groups on it.
      *
-     * @param slots the all slots.
-     * @param scores the allocation scores.
-     * @return the task executors with the order that aims to priority assigning requested groups on
-     *     it.
+     * @param taskManagerLocations task executors to sort.
+     * @param taskExecutorComparator the comparator to compare the target task executors.
+     * @return The sorted task executors list with the specified order by the comparator.
      */
-    List<TaskManagerLocation> sortPrioritizedTaskExecutors(
-            Collection<? extends SlotInfo> slots, Collection<AllocationScore> scores);
+    static List<TaskManagerLocation> sortTaskExecutors(
+            Collection<TaskManagerLocation> taskManagerLocations,
+            Comparator<TaskManagerLocation> taskExecutorComparator) {
+        return taskManagerLocations.stream()
+                .sorted(taskExecutorComparator)
+                .collect(Collectors.toList());
+    }
 
     static Map<TaskManagerLocation, ? extends Set<? extends SlotInfo>> getSlotsPerTaskExecutor(
             Collection<? extends SlotInfo> slots) {
@@ -136,5 +99,24 @@ public interface SlotAssigner {
                         Collectors.groupingBy(
                                 SlotInfo::getTaskManagerLocation,
                                 Collectors.mapping(identity(), Collectors.toSet())));
+    }
+
+    static List<ExecutionSlotSharingGroup> createExecutionSlotSharingGroups(
+            VertexParallelism vertexParallelism, SlotSharingGroup slotSharingGroup) {
+        final Map<Integer, Set<ExecutionVertexID>> sharedSlotToVertexAssignment = new HashMap<>();
+        slotSharingGroup
+                .getJobVertexIds()
+                .forEach(
+                        jobVertexId -> {
+                            int parallelism = vertexParallelism.getParallelism(jobVertexId);
+                            for (int subtaskIdx = 0; subtaskIdx < parallelism; subtaskIdx++) {
+                                sharedSlotToVertexAssignment
+                                        .computeIfAbsent(subtaskIdx, ignored -> new HashSet<>())
+                                        .add(new ExecutionVertexID(jobVertexId, subtaskIdx));
+                            }
+                        });
+        return sharedSlotToVertexAssignment.values().stream()
+                .map(SlotSharingSlotAllocator.ExecutionSlotSharingGroup::new)
+                .collect(Collectors.toList());
     }
 }
