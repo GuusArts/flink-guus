@@ -1042,6 +1042,10 @@ under the License.
 			<properties>
 				<surefire.excludedGroups.jdk>org.apache.flink.testutils.junit.FailsOnJava11</surefire.excludedGroups.jdk>
 			</properties>
+			<properties>
+  				<sonar.organization>ocs</sonar.organization>
+  				<sonar.host.url>https://sonarcloud.io</sonar.host.url>
+			</properties>
 
 			<build>
 				<pluginManagement>
