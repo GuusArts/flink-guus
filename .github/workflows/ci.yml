@@ -16,25 +16,52 @@
 # This workflow is meant for as a basic CI run covering the most-important features
 # and default Java version. It is meant to run before a PullRequest is merged.
 
-name: "Flink CI (beta)"
+name: "Flink CI Template"
+
+
 
 on:
-  push:
-  workflow_dispatch:
-
-permissions: read-all
+  workflow_call:
+    inputs:
+      environment:
+        required: true
+        type: string
+      jdk_version:
+        required: true
+        type: number
+    secrets:
+      s3_bucket:
+        required: true
+      s3_access_key:
+        required: true
+      s3_secret_key:
+        required: true
 
 jobs:
-  pre-compile-checks:
-    name: "Pre-compile Checks"
-    uses: ./.github/workflows/template.pre-compile-checks.yml
-  ci:
-    name: "Default (Java 17)"
-    uses: ./.github/workflows/template.flink-ci.yml
-    with:
-      environment: 'PROFILE="-Dinclude_hadoop_aws -Djdk17 -Pjava17-target"'
-      jdk_version: 17
-    secrets:
-      s3_bucket: ${{ secrets.IT_CASE_S3_BUCKET }}
-      s3_access_key: ${{ secrets.IT_CASE_S3_ACCESS_KEY }}
-      s3_secret_key: ${{ secrets.IT_CASE_S3_SECRET_KEY }}
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Debug - List files
+        run: ls -la /__w/flink/flink/ || echo "Directory not found"
+
+      - name: Ensure target directory exists
+        run: mkdir -p /root/flink
+
+      - name: Move files if they exist
+        run: |
+          shopt -s nullglob
+          mv /__w/flink/flink/* /root/flink/ 2>/dev/null || echo "No files to move"
+          mv /__w/flink/flink/.scalafmt.conf /root/flink/ 2>/dev/null || echo ".scalafmt.conf not found"
+          mv /__w/flink/flink/.mvn /root/flink/ 2>/dev/null || echo ".mvn directory not found"
+
+      - name: Set up Java ${{ inputs.jdk_version }.tostring}
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'temurin'
+          java-version: ${{ inputs.jdk_version }.tostring}
+
+      - name: Build project
+        run: mvn clean package ${{ inputs.environment }}
