@@ -749,7 +749,7 @@ under the License.
 			<dependency>
 				<groupId>joda-time</groupId>
 				<artifactId>joda-time</artifactId>
-				<version>2.5</version>
+				<version>2.13.1</version>
 			</dependency>
 
 			<dependency>
@@ -1337,8 +1337,7 @@ under the License.
 									<stylesheet>plain.xsl</stylesheet>
 
 									<fileMappers>
-										<fileMapper
-											implementation="org.codehaus.plexus.components.io.filemappers.FileExtensionMapper">
+										<fileMapper implementation="org.codehaus.plexus.components.io.filemappers.FileExtensionMapper">
 											<targetExtension>.html</targetExtension>
 										</fileMapper>
 									</fileMappers>
@@ -2177,7 +2176,7 @@ under the License.
 								<order>org.apache.flink,org.apache.flink.shaded,,javax,java,scala,\#</order>
 							</importOrder>
 
-							<removeUnusedImports />
+							<removeUnusedImports/>
 						</java>
 					</configuration>
 					<executions>
