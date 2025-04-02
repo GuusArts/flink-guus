@@ -48,20 +48,19 @@ import static org.apache.flink.util.Preconditions.checkState;
 
 /** A {@link SlotAssigner} that assigns slots based on the number of local key groups. */
 @Internal
-public class StateLocalitySlotAssigner implements SlotAssigner {
+public class StateLocalitySlotAssigner extends SlotAssigner {
 
-    private static class AllocationScore implements Comparable<AllocationScore> {
+    static class AllocationScore implements Comparable<AllocationScore> {
 
         private final String groupId;
         private final AllocationID allocationId;
+        private final long score;
 
         public AllocationScore(String groupId, AllocationID allocationId, long score) {
             this.groupId = groupId;
             this.allocationId = allocationId;
             this.score = score;
         }
-
-        private final long score;
 
         public String getGroupId() {
             return groupId;
@@ -89,6 +88,10 @@ public class StateLocalitySlotAssigner implements SlotAssigner {
         }
     }
 
+    StateLocalitySlotAssigner() {
+        super(new MinimalTaskExecutorSlotsFilter(true));
+    }
+
     @Override
     public Collection<SlotAssignment> assignSlots(
             JobInformation jobInformation,
@@ -112,7 +115,8 @@ public class StateLocalitySlotAssigner implements SlotAssigner {
         final Map<String, ExecutionSlotSharingGroup> groupsById =
                 allGroups.stream().collect(toMap(ExecutionSlotSharingGroup::getId, identity()));
         final Map<AllocationID, SlotInfo> slotsById =
-                freeSlots.stream().collect(toMap(SlotInfo::getAllocationId, identity()));
+                slotsFilter.filterSlots(freeSlots, allGroups, scores).stream()
+                        .collect(toMap(SlotInfo::getAllocationId, identity()));
         AllocationScore score;
         final Collection<SlotAssignment> assignments = new ArrayList<>();
         while ((score = scores.poll()) != null) {
