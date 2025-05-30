@@ -105,7 +105,7 @@ under the License.
 	<properties>
 		<project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 		<project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
-		<flink.hadoop.version>2.10.2</flink.hadoop.version>
+		<flink.hadoop.version>3.0.0</flink.hadoop.version>
 		<flink.XmxMax>3072m</flink.XmxMax>
 		<!-- XmxMax / forkCountITCase -->
 		<flink.XmxITCase>1536m</flink.XmxITCase>
@@ -1337,8 +1337,7 @@ under the License.
 									<stylesheet>plain.xsl</stylesheet>
 
 									<fileMappers>
-										<fileMapper
-											implementation="org.codehaus.plexus.components.io.filemappers.FileExtensionMapper">
+										<fileMapper implementation="org.codehaus.plexus.components.io.filemappers.FileExtensionMapper">
 											<targetExtension>.html</targetExtension>
 										</fileMapper>
 									</fileMappers>
@@ -2177,7 +2176,7 @@ under the License.
 								<order>org.apache.flink,org.apache.flink.shaded,,javax,java,scala,\#</order>
 							</importOrder>
 
-							<removeUnusedImports />
+							<removeUnusedImports/>
 						</java>
 					</configuration>
 					<executions>
